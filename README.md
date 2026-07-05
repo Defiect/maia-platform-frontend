@@ -14,13 +14,28 @@
 
 This repository contains the source code for the [Maia Chess Platform](https://www.maiachess.com), a modern web application designed for chess training and analysis. It leverages the Maia chess engine, developed by the University of Toronto's Computational Social Science Lab, to provide human-like move predictions and insights. The platform is built with Next.js, TypeScript, and Tailwind CSS. Join our [Discord server](https://discord.gg/hHb6gqFpxZ) for discussions, questions, and to connect with the community.
 
+The platform runs on **Maia 3**, a single unified neural network that conditions its predictions on a target Elo rating. This lets you explore human-like play across the full skill spectrum — from **Maia 600 to Maia 2600** in 100-point increments — all from one model running directly in your browser. Both Maia 3 and Stockfish 17 run client-side (via ONNX Runtime Web and WebAssembly), powering a dual-engine analysis experience with no server round-trips for evaluation.
+
+## Features
+
+The platform offers a range of tools for playing, training, and analyzing chess:
+
+- **Analysis**: Dual-engine (Maia 3 + Stockfish 17) analysis of your games, with move recommendations, win-probability tracking, deep analysis, and a "learn from your mistakes" workflow. You can browse your saved games, analyze live-streamed Lichess games, or upload/paste a custom **PGN or FEN** to analyze.
+- **Play**: Play full games against Maia at any rating from 600 to 2600, or team up in **Hand & Brain** mode where a human and Maia collaborate on moves.
+- **Openings**: An openings trainer and repeatable **opening drills** for practicing lines against Maia, with rating-based insights.
+- **Puzzles**: Tactics and training puzzles.
+- **Turing Test**: Guess whether a game was played by a human or by Maia.
+- **Broadcasts**: Live tournament coverage with real-time Maia/Stockfish analysis, including curated Candidates positions.
+- **Leaderboards & Profiles**: Track your standing across game modes and view player profiles and stats.
+- **Blog**: Articles and updates from the Maia team.
+
 ## Getting Started
 
 Follow these instructions to set up the development environment on your local machine.
 
 ### Prerequisites
 
-- Node.js (v17+ recommended)
+- Node.js (v18.18+ required by Next.js 15; v20+ recommended)
 - npm (comes bundled with Node.js)
 
 ### Installation
@@ -93,20 +108,20 @@ The `src/` directory contains all the core application code, organized as follow
 src/
 ├── api/          # Backend API client functions, organized by feature
 ├── components/   # Reusable React components, structured by feature or domain
+├── constants/    # Shared constants (e.g. Maia model list and rating ranges)
 ├── contexts/     # React Context providers for global state management
 ├── hooks/        # Custom React Hooks containing business logic and state
+├── lib/          # Utility functions, helpers, and the client-side engines (lib/engine)
 ├── pages/        # Next.js pages, defining the application's routes
-├── providers/    # Wrappers for context providers
 ├── styles/       # Global styles and Tailwind CSS configuration
-├── types/        # TypeScript type definitions, organized by feature
-└── lib/        # Utility functions and helpers
+└── types/        # TypeScript type definitions, organized by feature
 ```
 
 #### Core Concepts and Interactions
 
 The application's logic is primarily driven by a combination of custom hooks, React contexts, and components, creating a clear separation of concerns.
 
-- **Components (`src/components/`)**: These are the building blocks of the UI. They are designed to be "dumb" or presentational, receiving data and callbacks via props. Major features like `Analysis`, `Play`, `Openings`, and `Training` have their own dedicated component directories.
+- **Components (`src/components/`)**: These are the building blocks of the UI. They are designed to be "dumb" or presentational, receiving data and callbacks via props. Major features like `Analysis`, `Play`, `Openings`, `Puzzles`, and `Turing` have their own dedicated component directories.
 
 - **Hooks (`src/hooks/`)**: This is where the majority of the application's business logic resides. Each major feature has a corresponding "controller" hook (e.g., `usePlayController`, `useAnalysisController`). These hooks encapsulate state management, interactions with the chess engines, and API calls. They effectively act as state machines for their respective features.
 
@@ -124,11 +139,11 @@ To better understand the patterns used in this codebase, we recommend reviewing 
 
 ### Client-Side Chess Engines
 
-A key feature of the platform is its ability to run both Stockfish and Maia directly in the user's browser. This is accomplished using WebAssembly and ONNX Runtime Web.
+A key feature of the platform is its ability to run both Stockfish and Maia directly in the user's browser. This is accomplished using WebAssembly and ONNX Runtime Web, and both engines run inside Web Workers so that inference never blocks the UI thread.
 
-- **Stockfish (`src/contexts/StockfishEngineContext/`)**: We use a WebAssembly (WASM) version of Stockfish for standard chess analysis. The Stockfish engine is managed through a React Context provider that provides a simple interface to interact with the engine, allowing for move evaluation streams. This provides the "objective" best moves in any given position.
+- **Maia (`src/contexts/MaiaEngineContext.tsx`, `src/lib/engine/maia.ts`)**: The platform runs **Maia 3**, a single unified neural network provided as an ONNX (Open Neural Network Exchange) model (`public/maia3/maia3_simplified.onnx`). Unlike the earlier Maia models — which shipped one network per rating (e.g. `maia_kdd_1100` through `maia_kdd_1900`) — Maia 3 takes the target rating as a runtime input. It accepts both the player's Elo (`eloSelf`) and the opponent's Elo (`eloOppo`), so a single model can emulate human play from **Maia 600 to Maia 2600** (see `src/constants/common.ts` and `src/constants/analysis.ts`). The model is loaded and executed in a dedicated Web Worker (`public/maia-worker.js`) via `onnxruntime-web`, and is cached in IndexedDB after the first download, with progress reported to the UI. This engine provides the "human-like" move predictions that are central to the platform's mission.
 
-- **Maia (`src/contexts/MaiaEngineContext/`)**: The Maia engine is a neural network provided as an ONNX (Open Neural Network Exchange) model. We use the `onnxruntime-web` library to load and run Maia models on the client-side. The Maia engine is managed through a React Context provider that handles the download, initialization, and execution of the various Maia models (e.g., `maia_kdd_1100` to `maia_kdd_1900`). This engine provides the "human-like" move predictions that are central to the platform's mission.
+- **Stockfish (`src/contexts/StockfishEngineContext.tsx`, `src/lib/engine/stockfish.ts`)**: We use a WebAssembly build of **Stockfish 17** (via `lila-stockfish-web`, assets under `public/stockfish/`) for standard chess analysis. The engine is managed through a React Context provider that exposes a simple interface for streaming move evaluations, and its NNUE weights are downloaded on demand and cached. This provides the "objective" best moves in any given position.
 
 These context providers are consumed by higher-level controller hooks (like `useAnalysisController`) to provide the dual-engine analysis that powers many of the platform's features.
 
@@ -156,8 +171,14 @@ The project uses automated code formatting and linting to maintain consistency:
    - `silvenon.mdx`
 
 2. **Code Quality**: Run linting before committing:
+
    ```bash
    npm run lint
+   ```
+
+3. **Tests**: The project uses Jest. Run the test suite with:
+   ```bash
+   npm run test
    ```
 
 ### Code Conventions
@@ -185,7 +206,7 @@ The project uses automated code formatting and linting to maintain consistency:
 - **Platform processing**: Converts to current player's perspective (positive = good for current player)
 - **Implementation**: When it's Black's turn, the centipawn value is multiplied by -1
 
-This ensures consistent interpretation where positive values always represent an advantage for the player whose turn it is. The conversion logic is documented in `src/hooks/useStockfishEngine/engine.ts:138-155`.
+This ensures consistent interpretation where positive values always represent an advantage for the player whose turn it is. The conversion logic is documented in `src/lib/engine/stockfish.ts` (see the perspective-handling comments around the centipawn/mate normalization).
 
 #### State Management Architecture
 
