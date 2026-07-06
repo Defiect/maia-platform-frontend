@@ -143,9 +143,22 @@ A key feature of the platform is its ability to run both Stockfish and Maia dire
 
 - **Maia (`src/contexts/MaiaEngineContext.tsx`, `src/lib/engine/maia.ts`)**: The platform runs **Maia 3**, a single unified neural network provided as an ONNX (Open Neural Network Exchange) model (`public/maia3/maia3_simplified.onnx`). Unlike the earlier Maia models — which shipped one network per rating (e.g. `maia_kdd_1100` through `maia_kdd_1900`) — Maia 3 takes the target rating as a runtime input. It accepts both the player's Elo (`eloSelf`) and the opponent's Elo (`eloOppo`), so a single model can emulate human play from **Maia 600 to Maia 2600** (see `src/constants/common.ts` and `src/constants/analysis.ts`). The model is loaded and executed in a dedicated Web Worker (`public/maia-worker.js`) via `onnxruntime-web`, and is cached in IndexedDB after the first download, with progress reported to the UI. This engine provides the "human-like" move predictions that are central to the platform's mission.
 
-- **Stockfish (`src/contexts/StockfishEngineContext.tsx`, `src/lib/engine/stockfish.ts`)**: We use a WebAssembly build of **Stockfish 17** (via `lila-stockfish-web`, assets under `public/stockfish/`) for standard chess analysis. The engine is managed through a React Context provider that exposes a simple interface for streaming move evaluations, and its NNUE weights are downloaded on demand and cached. This provides the "objective" best moves in any given position.
+- **Stockfish (`src/contexts/StockfishEngineContext.tsx`, `src/lib/engine/stockfish.ts`)**: We use a WebAssembly build of **Stockfish 18 dev** (via `@lichess-org/stockfish-web`, assets under `public/stockfish/`) for standard chess analysis. The engine is managed through a React Context provider that exposes a simple interface for streaming move evaluations, and its NNUE weights are downloaded on demand and cached. This provides the "objective" best moves in any given position.
 
 These context providers are consumed by higher-level controller hooks (like `useAnalysisController`) to provide the dual-engine analysis that powers many of the platform's features.
+
+### Private LAN Deployment (Docker)
+
+The repo ships a self-hosted deployment for private LAN use, with optional server-side engines:
+
+```bash
+docker compose up -d --build
+```
+
+- **web** (`http://<host>:8080`): the Next.js app (standalone output).
+- **engine** (`http://<host>:3001`): a sidecar (`engine-server/`) exposing a native Stockfish dev build over WebSocket (`/ws/stockfish`) and Maia ONNX inference (`POST /maia/batch`) via `onnxruntime-node` with CUDA (automatic CPU fallback). Requires the NVIDIA Container Toolkit / Docker Desktop GPU support for CUDA.
+
+On the analysis page, two toggles in the sidebar header switch Maia and Stockfish independently between **client** (in-browser WASM/ONNX) and **server** (sidecar) execution. Note: on plain-HTTP LAN origins the browser disables `SharedArrayBuffer` (COOP/COEP requires a secure context), so client-side Stockfish is unavailable and the toggle defaults to server mode there. The sidecar is unauthenticated — do not expose it beyond a trusted LAN.
 
 ## Contributing Guidelines
 

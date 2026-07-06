@@ -5,6 +5,7 @@ import {
   SimplifiedAnalysisOverview,
   SimplifiedBlunderMeter,
 } from 'src/components/Analysis'
+import { EngineModeToggles } from 'src/components/Analysis/EngineModeToggles'
 import { motion } from 'framer-motion'
 import type { DrawShape } from 'chessground/draw'
 import { Dispatch, SetStateAction, useCallback, useMemo } from 'react'
@@ -183,6 +184,7 @@ export const AnalysisSidebar: React.FC<Props> = ({
           </h3>
         </div>
         <div className="flex items-center gap-2">
+          <EngineModeToggles />
           <button
             type="button"
             onClick={handleToggleAnalysis}

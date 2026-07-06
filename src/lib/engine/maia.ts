@@ -7,10 +7,12 @@ import {
   allPossibleMovesMaia3Reversed,
 } from './tensor'
 import { MaiaModelStorage } from './storage'
+import { EngineMode, getEngineServerUrl } from './engineSettings'
 
 interface MaiaOptions {
   model: string
   modelVersion: string
+  mode?: EngineMode
   setStatus: (status: MaiaStatus) => void
   setProgress: (progress: number) => void
   setError: (error: string) => void
@@ -37,11 +39,50 @@ class Maia {
   private pendingDownload: PendingDownload | null = null
   private downloadPromise: Promise<void> | null = null
   private nextRequestId = 0
+  readonly mode: EngineMode
 
   constructor(options: MaiaOptions) {
     this.options = options
+    this.mode = options.mode ?? 'client'
     this.storage = new MaiaModelStorage()
-    this.initialize(options.model, options.modelVersion)
+    if (this.mode === 'server') {
+      this.initializeServer()
+    } else {
+      this.initialize(options.model, options.modelVersion)
+    }
+  }
+
+  /**
+   * Server mode: inference happens on the engine-server sidecar, so there is
+   * no worker or local model download. Probe the server's health endpoint to
+   * report readiness.
+   */
+  private initializeServer() {
+    if (typeof window === 'undefined') {
+      return
+    }
+
+    this.options.setStatus('loading')
+    fetch(`${getEngineServerUrl()}/health`)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error(`Engine server health check failed (${res.status})`)
+        }
+        const health = await res.json().catch(() => ({}))
+        if (health && health.maia === false) {
+          throw new Error('Engine server has no Maia model loaded')
+        }
+        this.options.setProgress(100)
+        this.options.setStatus('ready')
+      })
+      .catch((error) => {
+        this.options.setError(
+          error instanceof Error
+            ? error.message
+            : 'Could not reach engine server',
+        )
+        this.options.setStatus('error')
+      })
   }
 
   private initialize(modelUrl: string, modelVersion: string) {
@@ -114,6 +155,10 @@ class Maia {
   }
 
   public async downloadModel() {
+    if (this.mode === 'server') {
+      // Nothing to download: the engine server hosts the model.
+      return
+    }
     if (!this.worker) throw new Error('Worker not initialized')
     if (this.downloadPromise) {
       return this.downloadPromise
@@ -137,12 +182,30 @@ class Maia {
     return await this.storage.clearAllStorage()
   }
 
+  /** Tears down the inference worker and rejects any in-flight requests. */
+  public destroy() {
+    if (this.worker) {
+      this.worker.terminate()
+      this.worker = null
+    }
+    for (const pending of this.pendingInferences.values()) {
+      pending.reject(new Error('Maia engine was destroyed'))
+    }
+    this.pendingInferences.clear()
+    this.pendingDownload = null
+    this.downloadPromise = null
+  }
+
   private runInference(
     tokens: Float32Array,
     eloSelfs: Float32Array,
     eloOppos: Float32Array,
     batchSize: number,
   ): Promise<{ logitsMove: Float32Array; logitsValue: Float32Array }> {
+    if (this.mode === 'server') {
+      return this.runServerInference(tokens, eloSelfs, eloOppos, batchSize)
+    }
+
     if (!this.worker) {
       return Promise.reject(new Error('Worker not initialized'))
     }
@@ -165,6 +228,53 @@ class Maia {
         [tokens.buffer, eloSelfs.buffer, eloOppos.buffer],
       )
     })
+  }
+
+  /**
+   * Runs a preprocessed inference batch on the engine-server sidecar.
+   * The response is a binary payload: a 4-byte little-endian uint32 with the
+   * number of move logits, followed by the move logits then value logits as
+   * float32 arrays.
+   */
+  private async runServerInference(
+    tokens: Float32Array,
+    eloSelfs: Float32Array,
+    eloOppos: Float32Array,
+    batchSize: number,
+  ): Promise<{ logitsMove: Float32Array; logitsValue: Float32Array }> {
+    const response = await fetch(`${getEngineServerUrl()}/maia/batch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        tokens: Array.from(tokens),
+        eloSelfs: Array.from(eloSelfs),
+        eloOppos: Array.from(eloOppos),
+        batchSize,
+      }),
+    })
+
+    if (!response.ok) {
+      const message = await response.text().catch(() => '')
+      throw new Error(
+        `Engine server Maia inference failed (${response.status})${
+          message ? `: ${message}` : ''
+        }`,
+      )
+    }
+
+    const buffer = await response.arrayBuffer()
+    if (buffer.byteLength < 4) {
+      throw new Error('Engine server returned malformed inference payload')
+    }
+
+    const moveCount = new DataView(buffer).getUint32(0, true)
+    const logitsMove = new Float32Array(buffer, 4, moveCount)
+    const logitsValue = new Float32Array(buffer, 4 + moveCount * 4)
+
+    return {
+      logitsMove: new Float32Array(logitsMove),
+      logitsValue: new Float32Array(logitsValue),
+    }
   }
 
   /**

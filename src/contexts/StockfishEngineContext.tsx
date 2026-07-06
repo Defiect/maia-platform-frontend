@@ -18,6 +18,8 @@ import {
   STOCKFISH_DEBUG_RERUN_KEY,
 } from 'src/constants/analysis'
 import Engine from 'src/lib/engine/stockfish'
+import { EngineMode } from 'src/lib/engine/engineSettings'
+import { useEngineSettings } from 'src/hooks/useEngineSettings'
 
 const STOCKFISH_LOADING_TOAST_DELAY_MS = 800
 const STOCKFISH_DEBUG_LOADING_KEY = 'maia.stockfishDebugLoading'
@@ -62,6 +64,8 @@ const getStockfishLoadingLabel = (
   if (!engine) return 'Loading Stockfish...'
 
   switch (engine.initializationPhase) {
+    case 'connecting-server':
+      return 'Connecting to engine server...'
     case 'checking-cache':
       return 'Checking local Stockfish cache...'
     case 'downloading-nnue':
@@ -75,23 +79,25 @@ const getStockfishLoadingLabel = (
   }
 }
 
-let sharedClientStockfishEngine: Engine | null = null
+let sharedStockfishEngines: Partial<Record<EngineMode, Engine>> = {}
 
-const getOrCreateStockfishEngine = (): Engine => {
+const getOrCreateStockfishEngine = (mode: EngineMode = 'client'): Engine => {
   if (typeof window === 'undefined') {
-    return new Engine()
+    return new Engine(mode)
   }
 
+  const existing = sharedStockfishEngines[mode]
   if (
-    !sharedClientStockfishEngine ||
-    (sharedClientStockfishEngine.initializationError &&
-      !sharedClientStockfishEngine.ready &&
-      !sharedClientStockfishEngine.initializing)
+    !existing ||
+    (existing.initializationError && !existing.ready && !existing.initializing)
   ) {
-    sharedClientStockfishEngine = new Engine()
+    sharedStockfishEngines = {
+      ...sharedStockfishEngines,
+      [mode]: new Engine(mode),
+    }
   }
 
-  return sharedClientStockfishEngine
+  return sharedStockfishEngines[mode] as Engine
 }
 
 const getRunKey = (run: StockfishEvaluation): string => {
@@ -931,9 +937,10 @@ export const StockfishEngineContext = React.createContext<StockfishEngine>({
 export const StockfishEngineContextProvider: React.FC<{
   children: ReactNode
 }> = ({ children }: { children: ReactNode }) => {
+  const { stockfishMode } = useEngineSettings()
   const engineRef = useRef<Engine | null>(null)
   if (!engineRef.current) {
-    engineRef.current = getOrCreateStockfishEngine()
+    engineRef.current = getOrCreateStockfishEngine(stockfishMode)
   }
   const [status, setStatus] = useState<StockfishStatus>(() => {
     if (engineRef.current?.initializationError) return 'error'
@@ -950,6 +957,20 @@ export const StockfishEngineContextProvider: React.FC<{
   )
   const toastId = useRef<string | null>(null)
   const loadingToastTimerRef = useRef<number | null>(null)
+
+  // Swap the backing engine when the client/server toggle changes.
+  useEffect(() => {
+    const current = engineRef.current
+    if (current && current.mode === stockfishMode) return
+
+    current?.stopEvaluation()
+    const next = getOrCreateStockfishEngine(stockfishMode)
+    engineRef.current = next
+    setStatus(
+      next.initializationError ? 'error' : next.ready ? 'ready' : 'loading',
+    )
+    setError(next.initializationError ?? null)
+  }, [stockfishMode])
 
   const streamEvaluations = useCallback(
     (

@@ -80,9 +80,9 @@ jest.mock('onnxruntime-web', () => ({
   Tensor: jest.fn(),
 }))
 
-// Mock lila-stockfish-web with conditional require
+// Mock @lichess-org/stockfish-web with conditional require
 try {
-  jest.mock('lila-stockfish-web', () => ({
+  jest.mock('@lichess-org/stockfish-web', () => ({
     __esModule: true,
     default: jest.fn().mockImplementation(() => ({
       postMessage: jest.fn(),

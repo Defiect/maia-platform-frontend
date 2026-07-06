@@ -9,6 +9,14 @@ import {
 import { GameNode, MaiaEvaluation } from 'src/types'
 import { MaiaEngineContext, StockfishEngineContext } from 'src/contexts'
 
+// How long Stockfish waits for Maia's policy before starting without it.
+// Starting after Maia gives Maia inference CPU priority and lets Stockfish
+// launch once with Maia candidate moves instead of restarting mid-run when
+// the policy arrives (restarts discard progress and suppress low-depth
+// evaluations, which is why results used to appear only at high depth).
+const MAIA_PRIORITY_TIMEOUT_MS = 4000
+const ENGINE_START_DEBOUNCE_MS = 100
+
 export const useEngineAnalysis = (
   currentNode: GameNode | null,
   inProgressAnalyses: Set<string>,
@@ -269,11 +277,23 @@ export const useEngineAnalysis = (
       }
     }
 
-    // Delay Stockfish analysis to prevent rapid fire when moving quickly
+    // Delay Stockfish analysis to prevent rapid fire when moving quickly.
+    // If Maia's policy for this node isn't available yet, wait for it (up to
+    // MAIA_PRIORITY_TIMEOUT_MS) so Maia gets CPU priority and Stockfish runs
+    // once with Maia candidates; the effect re-runs as soon as the policy
+    // lands because it is part of the dependency array.
+    const maiaPolicyPending =
+      !currentNode.analysis.maia?.[currentMaiaModel]?.policy &&
+      maia.status !== 'error' &&
+      maia.status !== 'no-cache'
+    const startDelayMs = maiaPolicyPending
+      ? MAIA_PRIORITY_TIMEOUT_MS
+      : ENGINE_START_DEBOUNCE_MS
+
     const timeoutId = setTimeout(() => {
       if (cancelled) return
       attemptStockfishAnalysis()
-    }, 100)
+    }, startDelayMs)
 
     return () => {
       cancelled = true
@@ -286,6 +306,7 @@ export const useEngineAnalysis = (
     setAnalysisState,
     targetDepth,
     stockfishDebugRerunToken,
+    maia.status,
     currentNode?.analysis.maia?.[currentMaiaModel]?.policy,
     currentNode?.mainChild?.move,
     enabled,

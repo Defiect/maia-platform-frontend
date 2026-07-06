@@ -1,5 +1,6 @@
 import Maia from '../lib/engine/maia'
 import { MaiaStatus, MaiaEngine } from 'src/types'
+import { useEngineSettings } from 'src/hooks/useEngineSettings'
 import React, {
   ReactNode,
   useState,
@@ -31,19 +32,31 @@ export const MaiaEngineContextProvider: React.FC<{ children: ReactNode }> = ({
   const [error, setError] = useState<string | null>(null)
   const toastId = useRef<string | null>(null)
   const loadingToastTimerRef = useRef<number | null>(null)
+  const { maiaMode } = useEngineSettings()
 
   const maia = useMemo(() => {
+    setStatus('loading')
+    setProgress(0)
+    setError(null)
     const model = new Maia({
       model:
         process.env.NEXT_PUBLIC_MAIA_MODEL_URL ??
         '/maia3/maia3_simplified.onnx',
       modelVersion: process.env.NEXT_PUBLIC_MAIA_MODEL_VERSION ?? '3',
+      mode: maiaMode,
       setStatus: setStatus,
       setProgress: setProgress,
       setError: setError,
     })
     return model
-  }, [])
+  }, [maiaMode])
+
+  // Terminate the previous instance's worker when the engine is swapped.
+  useEffect(() => {
+    return () => {
+      maia.destroy()
+    }
+  }, [maia])
 
   const downloadModel = useCallback(async () => {
     try {

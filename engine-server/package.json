@@ -1,0 +1,14 @@
+{
+  "name": "maia-engine-server",
+  "private": true,
+  "version": "1.0.0",
+  "description": "LAN engine sidecar: native Stockfish over WebSocket + Maia ONNX inference",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "onnxruntime-node": "^1.23.0",
+    "ws": "^8.18.0"
+  }
+}

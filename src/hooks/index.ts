@@ -1,4 +1,5 @@
 export * from './useAnalysisController'
+export * from './useEngineSettings'
 export * from './useSound'
 export * from './useLocalStorage'
 export * from './useOpeningDrillController'

@@ -1,6 +1,6 @@
 import { Chess } from 'chess.ts'
 import { cpToWinrate } from 'src/lib'
-import StockfishWeb from 'lila-stockfish-web'
+import StockfishWeb from '@lichess-org/stockfish-web'
 import {
   StockfishDiagnostics,
   StockfishEvaluation,
@@ -9,6 +9,8 @@ import {
   StockfishStreamOptions,
 } from 'src/types'
 import { StockfishModelStorage } from './stockfishStorage'
+import { RemoteStockfishWeb } from './remoteStockfish'
+import type { EngineMode } from './engineSettings'
 
 const DEFAULT_NNUE_FETCH_TIMEOUT_MS = 30000
 const DEFAULT_STOCKFISH_MODULE_INIT_TIMEOUT_MS = 15000
@@ -17,6 +19,7 @@ const STOCKFISH_CACHE_WRITE_TIMEOUT_MS = 5000
 type StockfishInitPhase =
   | 'idle'
   | 'loading-module'
+  | 'connecting-server'
   | 'checking-cache'
   | 'downloading-nnue'
   | 'loading-nnue'
@@ -83,8 +86,10 @@ class Engine {
   private currentMoveMapStrategy: StockfishMoveMapStrategy
   private currentAnalysisStartedAtMs: number
   private currentDiagnosticsToConsole: boolean
+  readonly mode: EngineMode
 
-  constructor() {
+  constructor(mode: EngineMode = 'client') {
+    this.mode = mode
     this.fen = ''
     this.store = {}
     this.moves = []
@@ -107,6 +112,11 @@ class Engine {
 
     // Skip browser-only Stockfish initialization during SSR/Node renders.
     if (typeof window === 'undefined' || typeof Worker === 'undefined') {
+      return
+    }
+
+    if (this.mode === 'server') {
+      this.initServerEngine()
       return
     }
 
@@ -133,6 +143,42 @@ class Engine {
           error instanceof Error
             ? error.message
             : 'Unknown initialization error'
+        this.isReady = false
+        this.nnueLoaded = false
+        this.initPhase = 'error'
+      })
+      .finally(() => {
+        this.initInFlight = false
+      })
+  }
+
+  private initServerEngine(): void {
+    this.initInFlight = true
+    this.initPhase = 'connecting-server'
+
+    const remote = new RemoteStockfishWeb()
+    remote
+      .ready()
+      .then(() => {
+        this.stockfish = remote
+        remote.uci('uci')
+        remote.uci('isready')
+        remote.uci('setoption name MultiPV value 100')
+        remote.onError = this.onError
+        remote.listen = this.onMessage
+        this.initError = null
+        this.isReady = true
+        // Native server engine manages its own networks.
+        this.nnueLoaded = true
+        this.initPhase = 'ready'
+      })
+      .catch((error) => {
+        console.error('Failed to connect to Stockfish engine server:', error)
+        remote.destroy()
+        this.initError =
+          error instanceof Error
+            ? error.message
+            : 'Could not reach engine server'
         this.isReady = false
         this.nnueLoaded = false
         this.initPhase = 'error'
@@ -509,6 +555,41 @@ class Engine {
       })
     }
 
+    // Flush incomplete depth buckets below `depth` once the engine has moved
+    // on to a deeper iteration, so partial results surface immediately
+    // instead of waiting for a full MultiPV sweep to complete.
+    const emitPartialDepthsBelow = (depth: number) => {
+      const pendingDepths = Object.keys(depthBuckets)
+        .map((d) => Number.parseInt(d, 10))
+        .filter((d) => Number.isFinite(d) && d < depth && d > lastEmittedDepth)
+        .sort((a, b) => a - b)
+
+      for (const d of pendingDepths) {
+        const bucket = depthBuckets[d]
+        if (!bucket) continue
+
+        const moves: RootSearchResult[] = []
+        for (let i = 1; i <= effectiveMultiPv; i++) {
+          const info = bucket[i]
+          if (!info) break
+          moves.push({
+            move: info.move,
+            cp: info.cp,
+            depth: info.depth,
+            mateIn: info.mateIn,
+          })
+        }
+        if (moves.length === 0) continue
+
+        lastEmittedDepth = d
+        enqueueSnapshot({
+          depth: d,
+          elapsedMs: Date.now() - startedAtMs,
+          moves,
+        })
+      }
+    }
+
     const parseInfoLine = (line: string) => {
       if (!line.startsWith('info ')) return
 
@@ -566,6 +647,7 @@ class Engine {
         depthBuckets[depth][multipv] = parsed
       }
 
+      emitPartialDepthsBelow(depth)
       emitDepthIfReady(depth)
     }
 
@@ -591,6 +673,7 @@ class Engine {
             for (const depth of knownDepths) {
               emitDepthIfReady(depth)
             }
+            emitPartialDepthsBelow(Number.POSITIVE_INFINITY)
             finish()
             return
           }
@@ -713,7 +796,9 @@ class Engine {
           movePhases[score.move] = 'screen'
         }
 
-        if (Object.keys(rootScores).length !== runContext.legalMoveCount) {
+        // Yield progressive partial evaluations as soon as any root moves are
+        // scored, instead of waiting until every legal move has been screened.
+        if (Object.keys(rootScores).length === 0) {
           continue
         }
 
@@ -732,7 +817,7 @@ class Engine {
             rootScores,
             movePhases,
             moveCounts: {
-              screened: runContext.legalMoveCount,
+              screened: Object.keys(rootScores).length,
               deepened: 0,
               finalAtTargetDepth: Object.values(rootScores).filter(
                 (score) => score.depth >= targetDepth,
@@ -1880,13 +1965,12 @@ const setupStockfish = async (
   onPhaseChange?: (phase: StockfishInitPhase) => void,
 ): Promise<StockfishWeb> => {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const makeModule: any = await import('lila-stockfish-web/sf17-79.js')
+  const makeModule: any = await import('@lichess-org/stockfish-web/sf_dev.js')
 
-  // NNUE weights served via raw.githubusercontent.com permalink (CORS + COEP compatible).
-  // Override with NEXT_PUBLIC_STOCKFISH_NNUE_BASE_URL for self-hosted deployments.
+  // NNUE weights self-hosted under public/stockfish (CORS + COEP compatible).
+  // Override with NEXT_PUBLIC_STOCKFISH_NNUE_BASE_URL for other deployments.
   const nnueBaseUrl =
-    process.env.NEXT_PUBLIC_STOCKFISH_NNUE_BASE_URL ??
-    'https://raw.githubusercontent.com/CSSLab/maia-platform-frontend/e23a50e/public/stockfish'
+    process.env.NEXT_PUBLIC_STOCKFISH_NNUE_BASE_URL ?? '/stockfish'
   const storage = new StockfishModelStorage()
   const timeoutMs = getNnueFetchTimeoutMs()
   const moduleInitTimeoutMs = getStockfishModuleInitTimeoutMs()

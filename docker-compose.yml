@@ -1,0 +1,32 @@
+services:
+  web:
+    build:
+      context: .
+      target: web
+    ports:
+      - '8080:3000'
+    restart: unless-stopped
+
+  engine:
+    build:
+      context: .
+      target: engine
+      args:
+        # Set to x86-64-bmi2 (or higher) if your CPU supports it for extra speed.
+        SF_ARCH: x86-64-avx2
+    ports:
+      - '3001:3001'
+    restart: unless-stopped
+    environment:
+      # Leave STOCKFISH_THREADS unset to use (cpu count - 2).
+      # STOCKFISH_THREADS: '8'
+      STOCKFISH_HASH_MB: '1024'
+      # 'auto' tries CUDA first, then falls back to CPU.
+      ONNX_EXECUTION: auto
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,12 @@
+.git
+.github
+.next
+node_modules
+engine-server/node_modules
+engine-server/models
+.vscode
+.env*.local
+coverage
+Dockerfile
+docker-compose.yml
+.dockerignore
